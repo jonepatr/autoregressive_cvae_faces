@@ -53,12 +53,7 @@ class FaceVAE(LightningModule):
         # init superclass
         super().__init__()
         self.hparams = hparams
-        # self.audio_size = hparams.audio_size
-
         self.data_files = json.load(open(self.hparams.data_files))
-
-        # if you specify an example input, the summary will show input/output for each layer
-        # self.example_input_array = torch.rand(80, 140)
 
         face_parts = (
             self.left_eye,
@@ -75,12 +70,8 @@ class FaceVAE(LightningModule):
         for first, last in face_parts:
             self.combined_face_parts += list(combinations(range(first, last), 2))
 
-        # build model
         self.__build_model()
 
-    # ---------------------
-    # MODEL SETUP
-    # ---------------------
     def __build_model(self):
         """
         Layout model
@@ -88,55 +79,16 @@ class FaceVAE(LightningModule):
         """
 
         self.fc1 = nn.Linear(self.hparams.data_dim, 70)
-        # self.fc2 = nn.Linear(100, 80)
-        # self.fc22 = nn.Linear(80, 40)
         self.fc31 = nn.Linear(70, self.hparams.bottleneck_size)
         self.fc32 = nn.Linear(70, self.hparams.bottleneck_size)
         self.fc4 = nn.Linear(self.hparams.bottleneck_size, 70)
-        # self.fc4 = nn.Linear(40, 80)
-        # self.fc5 = nn.Linear(80, 100)
-        # self.fc61 = nn.Linear(40, 140)
         self.fc6 = nn.Linear(70, self.hparams.data_dim)
 
-        # self.fc1 = nn.Linear(self.hparams.data_dim, 1000)
-        # self.fc2 = nn.Linear(1000, 1000)
-        # self.fc22 = nn.Linear(1000, 1000)
-        # self.fc31 = nn.Linear(1000, self.hparams.bottleneck_size)
-        # self.fc32 = nn.Linear(1000, self.hparams.bottleneck_size)
-        # self.fc40 = nn.Linear(self.hparams.bottleneck_size, 1000)
-        # self.fc4 = nn.Linear(1000, 1000)
-        # self.fc5 = nn.Linear(1000, 1000)
-        # self.fc6 = nn.Linear(1000, self.hparams.data_dim)
         self.fc6.weight.data.fill_(0)
-
-    # ---------------------
-    # TRAINING
-    # ---------------------
-
-    # def filmit(self, f):
-    #     return torch.chunk(f, 2, dim=1)
-
-    def on_after_backward(self):
-        # example to inspect gradient information in tensorboard
-        if self.trainer.global_step % 25 == 0:  # don't make the tf file huge
-            params = self.state_dict()
-            for k, v in params.items():
-                grads = v
-                name = k
-                self.experiment.add_histogram(
-                    tag=name, values=grads, global_step=self.trainer.global_step
-                )
 
     def encode(self, x):
         h1 = F.relu(self.fc1(x))
-        # h2 = F.relu(self.fc2(h1))
-        # h3 = F.relu(self.fc22(h2))
         return self.fc31(h1), self.fc32(h1)
-
-    # def encode(self, x, cond):
-    #     h1 = F.relu(self.fc1(self.film(x, *self.filmit(self.fc1_film(cond)))))
-    #     h2 = F.relu(self.fc2(self.film(h1, *self.filmit(self.fc2_film(cond)))))
-    #     return self.fc31(torch.sigmoid(self.film(h2, *self.filmit(self.fc31_film(cond))))), F.relu(self.fc32(torch.sigmoid(self.film(h2, *self.filmit(self.fc32_film(cond))))))
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -145,32 +97,16 @@ class FaceVAE(LightningModule):
 
     def decode(self, z):
         h3 = F.relu(self.fc4(z))
-        # h4 = F.relu(self.fc4(h3))
-        # h5 = F.relu(self.fc5(h4))
-        return torch.tanh(self.fc6(h3))  # , self.fc62(h5)
-
-    # def decode(self, z, cond):
-    #     h3 = F.relu(self.fc4(self.film(z, *self.filmit(self.fc4_film(cond)))))
-    #     h4 = F.relu(self.fc5(self.film(h3, *self.filmit(self.fc5_film(cond)))))
-    #     return torch.tanh(self.fc6(self.film(h4, *self.filmit(self.fc6_film(cond)))))
+        return torch.tanh(self.fc6(h3))
 
     def forward(self, x):
-        """
-        No special modification required for lightning, define as you normally would
-        :param x:
-        :return:
-        """
-
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
         y_hat = self.decode(z)
-        # y_hat = self.decode(mu)
-
         return y_hat, mu, logvar, z
 
     def gll_loss(self, output_x, target_x):
         GLL = 0
-        # import pdb; pdb.set_trace()
         for i in range(output_x[0].size(0)):
             mu_x, logvar_x = output_x[0][i], output_x[1][i]
             part1 = torch.sum(logvar_x)
@@ -185,34 +121,20 @@ class FaceVAE(LightningModule):
         )
 
     def group_distance_loss(self, output, target):
-        # import pdb; pdb.set_trace()
         o_x = output[:, self.combined_face_parts][:,:,0]
         o_y = output[:, self.combined_face_parts][:,:,1]
         t_x = target[:, self.combined_face_parts][:,:,0]
         t_y = target[:, self.combined_face_parts][:,:,1]
-        # import pdb; pdb.set_trace()
         o_dist = torch.sqrt(torch.sum((o_x - o_y).pow(2), dim=2))
         t_dist = torch.sqrt(torch.sum((t_x - t_y).pow(2), dim=2))
 
         return F.mse_loss(o_dist, t_dist, reduction="sum")
 
     def vae_loss(self, output, target, mu, logvar):
-        # MSE = F.mse_loss(output, target)
-        # batch_size = output.size(0)
 
-        # GLL = self.gll_loss(output, target) / batch_size
-
-        # output.reshape(-1, 70, 2)[:, list(range(48, 60)) + list(range(60, 68))] *= 100
-        # target.reshape(-1, 70, 2)[:, list(range(48, 60)) + list(range(60, 68))] *= 100
-        # target.reshape(-1, 70, 2)[:, list(range(48, 60))] *= 100
-        # import pdb; pdb.set_trace()
         o = output.reshape(-1, 70, 2)
         t = target.reshape(-1, 70, 2)
 
-        # weights = torch.ones_like(o)
-        # weights[:, list(range(48, 60)) + list(range(60, 68))] = 100
-
-        # import pdb; pdb.set_trace()
         MSE = F.mse_loss(o, t, reduction="sum")
         # MSE = F.mse_loss(o * weights, t * weights, reduction="sum")  # / self.hparams.data_dim
         # MSE = F.mse_loss(o, t, reduction="sum") / batch_size / self.hparams.data_dim  # / self.hparams.data_dim
@@ -226,9 +148,8 @@ class FaceVAE(LightningModule):
             kl_annealing_factor = 0
         else:
             kl_annealing_factor = max(self.current_epoch - 10 / 10, 1)
-        kl_annealing_factor = 1
-        # import pdb; pdb.set_trace()
-        # import pdb; pdb.set_trace()
+        # kl_annealing_factor = 1
+
         KLD = (
             kl_annealing_factor
             # * ((self.hparams.beta * self.hparams.bottleneck_size) / self.hparams.data_dim)
@@ -404,5 +325,12 @@ class FaceVAE(LightningModule):
             options=[32, 64, 128, 256],
             tunable=False,
             help="batch size will be divided over all gpus being used across all nodes",
+        )
+        parser.opt_list(
+            "--learning_rate",
+            default=0.001 * 8,
+            type=float,
+            options=[0.0001, 0.0005, 0.001],
+            tunable=True,
         )
         return parser
