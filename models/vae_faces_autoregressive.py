@@ -23,10 +23,10 @@ from torchvision.datasets import MNIST
 
 from dataset import Speech2FaceDataset
 import constants
-from visualize import visualize_pairs
+from visualize import visualize_videos
 
 
-class FaceVAE(LightningModule):
+class AutoregressiveFaceVAE(LightningModule):
     def __init__(self, hparams):
         super().__init__()
         self.hparams = hparams
@@ -36,16 +36,18 @@ class FaceVAE(LightningModule):
         for first, last in constants.face_parts:
             self.combined_face_parts += list(combinations(range(first, last), 2))
 
-        self.fc1 = nn.Linear(self.hparams.data_dim, 70)
+        self.fc1 = nn.Linear(self.hparams.data_dim * 3, 70)
         self.fc31 = nn.Linear(70, self.hparams.bottleneck_size)
         self.fc32 = nn.Linear(70, self.hparams.bottleneck_size)
-        self.fc4 = nn.Linear(self.hparams.bottleneck_size, 70)
+        self.fc4 = nn.Linear(
+            self.hparams.bottleneck_size + (2 * self.hparams.data_dim), 70
+        )
         self.fc6 = nn.Linear(70, self.hparams.data_dim)
 
         self.fc6.weight.data.fill_(0)
 
-    def encode(self, x):
-        h1 = F.relu(self.fc1(x))
+    def encode(self, x_t0, x_t1, x_t2):
+        h1 = F.relu(self.fc1(torch.cat([x_t0, x_t1, x_t2], dim=1)))
         return self.fc31(h1), self.fc32(h1)
 
     def reparameterize(self, mu, logvar):
@@ -53,15 +55,26 @@ class FaceVAE(LightningModule):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def decode(self, z):
-        h3 = F.relu(self.fc4(z))
+    def decode(self, z, x_t1, x_t2):
+        h3 = F.relu(self.fc4(torch.cat([z, x_t1, x_t2], dim=1)))
         return torch.tanh(self.fc6(h3))
 
     def forward(self, x):
-        mu, logvar = self.encode(x)
-        z = self.reparameterize(mu, logvar)
-        y_hat = self.decode(z)
-        return y_hat, mu, logvar, z
+        mus, logvars, zs, y_hats = [], [], [], []
+        for i in range(2, x.size(1)):
+            mu, logvar = self.encode(x[:, i], x[:, i - 1], x[:, i - 2])
+            z = self.reparameterize(mu, logvar)
+            y_hat = self.decode(z, x[:, i - 1], x[:, i - 2])
+            mus.append(mu)
+            logvars.append(logvar)
+            zs.append(z)
+            y_hats.append(y_hat)
+        return (
+            torch.stack(y_hats, dim=1),
+            torch.stack(mus, dim=1),
+            torch.stack(logvars, dim=1),
+            torch.stack(zs, dim=1),
+        )
 
     def gll_loss(self, output_x, target_x):
         GLL = 0
@@ -90,14 +103,14 @@ class FaceVAE(LightningModule):
 
     def vae_loss(self, output, target, mu, logvar):
 
-        o = output.reshape(-1, 70, 2)
-        t = target.reshape(-1, 70, 2)
+        o = output.reshape(-1, self.hparams.frame_len-2, 70, 2)
+        t = target.reshape(-1, self.hparams.frame_len-2, 70, 2)
 
         MSE = F.mse_loss(o, t, reduction="sum")
         # MSE = F.mse_loss(o * weights, t * weights, reduction="sum")  # / self.hparams.data_dim
         # MSE = F.mse_loss(o, t, reduction="sum") / batch_size / self.hparams.data_dim  # / self.hparams.data_dim
 
-        EXTRA_MSE = self.group_distance_loss(o, t) * self.hparams.group_distance_scaling
+        # EXTRA_MSE = self.group_distance_loss(o, t) * self.hparams.group_distance_scaling
 
         # MSE = F.mse_loss(o, t)  # torch.mean(torch.sum((target - output) ** 2, axis=1))
         # MSE = torch.mean(F.pairwise_distance(o, t))
@@ -106,7 +119,7 @@ class FaceVAE(LightningModule):
             kl_annealing_factor = 0
         else:
             kl_annealing_factor = max(self.current_epoch - 10 / 10, 1)
-        # kl_annealing_factor = 1
+        kl_annealing_factor = 1
 
         KLD = (
             kl_annealing_factor
@@ -123,7 +136,7 @@ class FaceVAE(LightningModule):
         # o_u = torch.cdist(o, o)
         # dist_loss = F.mse_loss(t_u, o_u).to(output.device)
 
-        loss = MSE + KLD + EXTRA_MSE
+        loss = MSE + KLD  # + EXTRA_MSE
         # loss = EXTRA_MSE
 
         # self.experiment.add_scalar("gll", GLL, self.global_step)
@@ -131,30 +144,31 @@ class FaceVAE(LightningModule):
             loss.unsqueeze(0),
             MSE.unsqueeze(0),
             KLD.unsqueeze(0),
-            EXTRA_MSE.unsqueeze(0),
+            # EXTRA_MSE.unsqueeze(0),
         )
 
     def training_step(self, batch, batch_nb):
-        x = batch["x"].squeeze(1)
+        x = batch["x"]
+        # cond = batch["audio_features"]
         output, mu, logvar, _ = self.forward(x)
 
-        total_loss, mse_loss, kld_loss, extra_mse_loss = self.vae_loss(
-            output, x, mu, logvar
+        total_loss, mse_loss, kld_loss = self.vae_loss(
+            output, x[:,2:], mu, logvar
         )
         return {
             "loss": total_loss,
             "prog": {
                 "mse_loss": mse_loss,
                 "kld_loss": kld_loss,
-                "extra_mse_loss": extra_mse_loss,
+                # "extra_mse_loss": extra_mse_loss,
             },
         }
 
     def validation_step(self, batch, batch_nb):
-        x = batch["x"].squeeze(1)
+        x = batch["x"]
         output, mu, logvar, z = self.forward(x)
         if batch_nb == 0:
-            visualize_pairs(self.experiment, x, output, 5, self.global_step)
+            visualize_videos(self.experiment, x, output, 1, self.global_step, self.hparams.fps)
 
             # std = torch.exp(0.5 * logvar)
             # if batch_nb == 0:
@@ -176,7 +190,7 @@ class FaceVAE(LightningModule):
             for i in range(z.size(1)):
                 self.experiment.add_histogram(f"z_{i}", z[:, i], self.current_epoch)
 
-        total_loss, *_ = self.vae_loss(output, x, mu, logvar)
+        total_loss, *_ = self.vae_loss(output, x[:,2:], mu, logvar)
         return {"val_loss": total_loss}
 
     def validation_end(self, outputs):
@@ -199,7 +213,7 @@ class FaceVAE(LightningModule):
             Speech2FaceDataset(
                 files,
                 data_dir=self.hparams.data_dir,
-                frame_history_len=1,
+                frame_history_len=self.hparams.frame_len,
                 audio_feature_type="spectrogram",
             ),
             batch_size=self.hparams.batch_size,
@@ -231,6 +245,9 @@ class FaceVAE(LightningModule):
             strategy=parent_parser.strategy, parents=[parent_parser]
         )
 
+        
+        parser.add_argument("--fps", default=30, type=int)
+        parser.add_argument("--frame_len", default=4, type=int)
         parser.add_argument("--beta", default=1, type=float)
         parser.add_argument("--bottleneck_size", default=10, type=int)
         parser.add_argument("--group_distance_scaling", default=1, type=float)

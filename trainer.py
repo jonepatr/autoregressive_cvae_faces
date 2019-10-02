@@ -8,6 +8,7 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from test_tube import Experiment, HyperOptArgumentParser
 
 from models.vae_faces import FaceVAE
+from models.vae_faces_autoregressive import AutoregressiveFaceVAE
 
 
 def main(hparams):
@@ -24,7 +25,7 @@ def main(hparams):
     exp.argparse(hparams)
     exp.save()
 
-    model = FaceVAE(hparams)
+    model = AutoregressiveFaceVAE(hparams)
 
     early_stop = EarlyStopping(
         monitor="avg_val_loss", patience=3, verbose=True, mode="min"
@@ -70,7 +71,7 @@ if __name__ == "__main__":
         help="When using multiple GPUs set Trainer(distributed_backend=dp) (or ddp)",
     )
     # allow model to overwrite or extend args
-    parser = FaceVAE.add_model_specific_args(parent_parser, root_dir)
+    parser = AutoregressiveFaceVAE.add_model_specific_args(parent_parser, root_dir)
 
     hyperparams = parser.parse_args()
     print(hyperparams)
