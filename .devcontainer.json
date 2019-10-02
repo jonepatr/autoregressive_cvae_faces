@@ -1,0 +1,15 @@
+// See https://aka.ms/vscode-remote/devcontainer.json for format details or
+// https://aka.ms/vscode-dev-containers/definitions for sample configurations.
+{
+	"dockerFile": "Dockerfile",
+	"extensions": ["ms-python.python"],
+	"workspaceFolder": "/workspace",
+	"workspaceMount": "src=remote-workspace,dst=/workspace,type=volume,volume-driver=local",
+	"runArgs": [
+		"-v", "/projects/text2face/data2:/data_dir",
+		"-p", "6056:6056",
+		"-p", "8858:8858",
+		"--runtime", "nvidia",
+		"-u", "pjjonell"
+	]
+}
