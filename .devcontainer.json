@@ -9,8 +9,7 @@
 		"-v", "/projects/text2face/data2:/data_dir",
 		"-p", "6056:6056",
 		"-p", "8858:8858",
-		"--runtime", "nvidia",
-		"-u", "pjjonell"
+		"--runtime", "nvidia"
 	],
 	"shutdownAction": "none"
 }
