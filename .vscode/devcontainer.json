@@ -4,10 +4,13 @@
 	"dockerFile": "Dockerfile",
 	"extensions": ["ms-python.python"],
 	"workspaceFolder": "/workspace",
-	"workspaceMount": "src=remote-workspace,dst=/workspace,type=volume,volume-driver=local",
+	"workspaceMount": "src=/home/pjjonell/haha/test_vae,dst=/workspace,type=bind",
 	"runArgs": [
 		"-v", "/projects/text2face/data2:/data_dir",
 		"-p", "6056:6056",
-		"-p", "8858:8858"
-	]
+		"-p", "8858:8858",
+		"--runtime", "nvidia",
+		"-u", "pjjonell"
+	],
+	"shutdownAction": "none"
 }
