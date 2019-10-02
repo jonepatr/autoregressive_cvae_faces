@@ -102,3 +102,7 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+test_tube_logs
+old
+pipeline_toolkit
