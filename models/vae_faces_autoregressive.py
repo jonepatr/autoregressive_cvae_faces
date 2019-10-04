@@ -21,9 +21,9 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.datasets import MNIST
 
-from dataset import Speech2FaceDataset
 import constants
-from visualize import visualize_videos
+from dataset import Speech2FaceDataset
+from visualize import create_split_video, create_single_video
 
 
 class AutoregressiveFaceVAE(LightningModule):
@@ -76,45 +76,26 @@ class AutoregressiveFaceVAE(LightningModule):
             torch.stack(zs, dim=1),
         )
 
-    def gll_loss(self, output_x, target_x):
-        GLL = 0
-        for i in range(output_x[0].size(0)):
-            mu_x, logvar_x = output_x[0][i], output_x[1][i]
-            part1 = torch.sum(logvar_x)
-            sigma = logvar_x.mul(0.5).exp_()
-            part2 = torch.sum(((target_x - mu_x) / sigma) ** 2)
-            GLL += 0.5 * (part1 + part2)
-        return GLL
+    def infer(self, x, length):
+        for i in range(2, length):
+            mu, logvar = self.encode(x[:, i], x[:, i - 1], x[:, i - 2])
+            z = self.reparameterize(mu, logvar)
+            y_hat = self.decode(z, x[:, i - 1], x[:, i - 2]).unsqueeze(1)
+            x = torch.cat([x, y_hat], dim=1)
+        return x
 
     def kld_loss(self, mu, logvar):
         return torch.mean(
             -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())  # , dim=1
         )
 
-    def group_distance_loss(self, output, target):
-        o_x = output[:, self.combined_face_parts][:, :, 0]
-        o_y = output[:, self.combined_face_parts][:, :, 1]
-        t_x = target[:, self.combined_face_parts][:, :, 0]
-        t_y = target[:, self.combined_face_parts][:, :, 1]
-        o_dist = torch.sqrt(torch.sum((o_x - o_y).pow(2), dim=2))
-        t_dist = torch.sqrt(torch.sum((t_x - t_y).pow(2), dim=2))
-
-        return F.mse_loss(o_dist, t_dist, reduction="sum")
-
     def vae_loss(self, output, target, mu, logvar):
 
-        o = output.reshape(-1, self.hparams.frame_len-2, 70, 2)
-        t = target.reshape(-1, self.hparams.frame_len-2, 70, 2)
+        o = output.reshape(-1, output.size(1), 70, 2)
+        t = target.reshape(-1, target.size(1), 70, 2)
 
         MSE = F.mse_loss(o, t, reduction="sum")
-        # MSE = F.mse_loss(o * weights, t * weights, reduction="sum")  # / self.hparams.data_dim
-        # MSE = F.mse_loss(o, t, reduction="sum") / batch_size / self.hparams.data_dim  # / self.hparams.data_dim
 
-        # EXTRA_MSE = self.group_distance_loss(o, t) * self.hparams.group_distance_scaling
-
-        # MSE = F.mse_loss(o, t)  # torch.mean(torch.sum((target - output) ** 2, axis=1))
-        # MSE = torch.mean(F.pairwise_distance(o, t))
-        # import pdb; pdb.set_trace()
         if self.current_epoch < 10:
             kl_annealing_factor = 0
         else:
@@ -127,34 +108,17 @@ class AutoregressiveFaceVAE(LightningModule):
             * self.hparams.beta
             * (self.kld_loss(mu, logvar))  # / batch_size / self.hparams.bottleneck_size
         )
-        # KLD = kl_annealing_factor * ((self.hparams.beta * self.hparams.bottleneck_size) / batch_size) * self.kld_loss(mu, logvar)
-        # KLD = self.kld_loss(mu, logvar)
-        # 0.0001 * MSE +
-        # t = target.reshape(-1, 70, 2).cpu()
-        # o = output.reshape(-1, 70, 2).cpu()
-        # t_u = torch.cdist(t, t)
-        # o_u = torch.cdist(o, o)
-        # dist_loss = F.mse_loss(t_u, o_u).to(output.device)
 
-        loss = MSE + KLD  # + EXTRA_MSE
-        # loss = EXTRA_MSE
+        loss = MSE + KLD
 
-        # self.experiment.add_scalar("gll", GLL, self.global_step)
-        return (
-            loss.unsqueeze(0),
-            MSE.unsqueeze(0),
-            KLD.unsqueeze(0),
-            # EXTRA_MSE.unsqueeze(0),
-        )
+        return (loss.unsqueeze(0), MSE.unsqueeze(0), KLD.unsqueeze(0))
 
     def training_step(self, batch, batch_nb):
         x = batch["x"]
         # cond = batch["audio_features"]
         output, mu, logvar, _ = self.forward(x)
 
-        total_loss, mse_loss, kld_loss = self.vae_loss(
-            output, x[:,2:], mu, logvar
-        )
+        total_loss, mse_loss, kld_loss = self.vae_loss(output, x[:, 2:], mu, logvar)
         return {
             "loss": total_loss,
             "prog": {
@@ -168,29 +132,31 @@ class AutoregressiveFaceVAE(LightningModule):
         x = batch["x"]
         output, mu, logvar, z = self.forward(x)
         if batch_nb == 0:
-            visualize_videos(self.experiment, x, output, 1, self.global_step, self.hparams.fps)
+            rand_ints = torch.randint(output.size(0), (1,))[0]
 
-            # std = torch.exp(0.5 * logvar)
-            # if batch_nb == 0:
+            create_split_video(
+                f"videos/{self.global_step:05}_validation.mp4",
+                x[rand_ints, 2:].reshape(-1, 70, 2).detach().cpu(),
+                output[rand_ints].reshape(-1, 70, 2).detach().cpu(),
+                batch["first_frame"][rand_ints],
+                batch["video_path"][rand_ints],
+                batch["audio_path"][rand_ints],
+                self.hparams.fps,
+            )
 
-            #     # Do random sampling
-            #     sample = torch.randn(1, self.hparams.bottleneck_size).to(x.device)
-            #     x_out = self.decode(sample)  # .numpy()
-
-            #     # x_out = self.reparameterize(mu, logvar)
-            #     sample_res = x_out.reshape(70, 2).cpu()
-
-            #     # fig = plt.figure()
-            #     fig, ax1 = plt.subplots(1, 1)
-            #     # ax1.scatter(sample_res[:, 0], -sample_res[:, 1])
-            #     self.plot_face(sample_res, ax1)
-            #     self.experiment.add_figure("matplotlib", fig)
-            #     plt.close(fig)
+            inferred_out = self.infer(x[rand_ints, :3].unsqueeze(0), 30)
+            create_single_video(
+                f"videos/{self.global_step:05}_inference.mp4",
+                inferred_out.reshape(-1, 70, 2).detach().cpu(),
+                batch["first_frame"][rand_ints],
+                batch["audio_path"][rand_ints],
+                self.hparams.fps,
+            )
 
             for i in range(z.size(1)):
                 self.experiment.add_histogram(f"z_{i}", z[:, i], self.current_epoch)
 
-        total_loss, *_ = self.vae_loss(output, x[:,2:], mu, logvar)
+        total_loss, *_ = self.vae_loss(output, x[:, 2:], mu, logvar)
         return {"val_loss": total_loss}
 
     def validation_end(self, outputs):
@@ -207,13 +173,13 @@ class AutoregressiveFaceVAE(LightningModule):
         """
         return [torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)]
 
-    def __dataloader(self, files):
+    def __dataloader(self, files, frame_len):
 
         return DataLoader(
             Speech2FaceDataset(
                 files,
                 data_dir=self.hparams.data_dir,
-                frame_history_len=self.hparams.frame_len,
+                frame_history_len=frame_len,
                 audio_feature_type="spectrogram",
             ),
             batch_size=self.hparams.batch_size,
@@ -221,16 +187,16 @@ class AutoregressiveFaceVAE(LightningModule):
         )
 
     @ptl.data_loader
-    def tng_dataloader(self):
-        return self.__dataloader(self.data_files["train"])
+    def train_dataloader(self):
+        return self.__dataloader(self.data_files["train"], self.hparams.frame_len)
 
     @ptl.data_loader
     def val_dataloader(self):
-        return self.__dataloader(self.data_files["val"])
+        return self.__dataloader(self.data_files["val"], 30)
 
     @ptl.data_loader
     def test_dataloader(self):
-        return self.__dataloader(self.data_files["test"])
+        return self.__dataloader(self.data_files["test"], 30)
 
     @staticmethod
     def add_model_specific_args(parent_parser, root_dir):  # pragma: no cover
@@ -245,7 +211,6 @@ class AutoregressiveFaceVAE(LightningModule):
             strategy=parent_parser.strategy, parents=[parent_parser]
         )
 
-        
         parser.add_argument("--fps", default=30, type=int)
         parser.add_argument("--frame_len", default=4, type=int)
         parser.add_argument("--beta", default=1, type=float)

@@ -61,7 +61,7 @@ if __name__ == "__main__":
     np.random.seed(SEED)
 
     # use default args given by lightning
-    root_dir = os.path.split(os.path.dirname(sys.modules["__main__"].__file__))[0]
+    root_dir = os.getcwd()
     parent_parser = HyperOptArgumentParser(strategy="random_search", add_help=False)
     add_default_args(parent_parser, root_dir, rand_seed=SEED)
     parent_parser.add_argument(

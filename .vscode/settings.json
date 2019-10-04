@@ -1,4 +1,6 @@
 {
     "python.pythonPath": "/opt/conda/bin/python",
-    "python.formatting.provider": "black"
+    "python.formatting.provider": "black",
+    "docker.host": "tcp://localhost:23750",
+    "python.linting.enabled": true
 }

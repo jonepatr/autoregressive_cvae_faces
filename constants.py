@@ -19,3 +19,5 @@ face_parts = (
     vertical_nose,
     horizontal_nose,
 )
+
+ffmpeg_bin = "/usr/bin/ffmpeg"
